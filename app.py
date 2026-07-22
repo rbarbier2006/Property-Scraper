@@ -234,8 +234,12 @@ def _show_processed_result(
 
 
 def main() -> None:
-    st.set_page_config(page_title="Property CSV Cleaner", page_icon="🏠", layout="wide")
-    st.title("Property CSV Cleaner & Address Parser")
+    st.set_page_config(
+        page_title="Central Capital Services Property Scraper",
+        page_icon="🏠",
+        layout="wide",
+    )
+    st.title("Central Capital Services Property Scraper")
     st.write(
         "Filter Personal property records, parse addresses with deterministic Python, "
         "optionally review unresolved rows with OpenAI, and export a clean Excel database."
