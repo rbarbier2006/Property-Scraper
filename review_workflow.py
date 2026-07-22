@@ -13,6 +13,7 @@ from data_processing import ProcessingResult, refresh_processing_result
 from openai_reviewer import (
     AddressReviewProposal,
     MissingAPIKeyError,
+    ReviewServiceError,
     ReviewerConfig,
     ValidationResult,
     build_review_payload,
@@ -44,6 +45,7 @@ class ReviewRunSummary:
     failed: int = 0
     auto_accepted: int = 0
     skipped_cached: int = 0
+    error_messages: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -145,9 +147,7 @@ def _attempt_audit_record(
         "AI Decision": proposal.decision if proposal else "",
         "Information Added": proposal.information_added if proposal else "",
         "Manual Review Required": proposal.manual_review_required if proposal else "",
-        "Validation Result": (
-            "API review failed" if attempt.error_message else attempt.validation.summary
-        ),
+        "Validation Result": attempt.error_message or attempt.validation.summary,
         "Correction Accepted": attempt.accepted,
         "Review Method": "OpenAI",
         "Final Address": final["Address"],
@@ -226,6 +226,7 @@ def review_eligible_rows(
 
     active_client = client or create_openai_client(config)
     completed = failed = auto_accepted = 0
+    error_messages: list[str] = []
     for row_index, signature in pending:
         row = result.database.loc[row_index]
         current = _current_components(row)
@@ -261,16 +262,35 @@ def review_eligible_rows(
                 review_status = "Pending Manual Review"
             else:
                 review_status = "Rejected by Python Validation"
-        except Exception:
+        except ReviewServiceError as exc:
+            safe_error = str(exc)
             attempt = ReviewAttempt(
                 signature=signature,
                 database_row=row_index,
                 payload=payload,
                 current=current,
                 proposal=None,
-                validation=ValidationResult(False, ("AI review failed",)),
-                error_message="AI review failed",
+                validation=ValidationResult(False, (safe_error,)),
+                error_message=safe_error,
             )
+            error_messages.append(safe_error)
+            failed += 1
+            review_status = "API Failure - Manual Review"
+        except Exception:
+            safe_error = (
+                "AI review failed before a structured proposal was available. The "
+                "address was not changed."
+            )
+            attempt = ReviewAttempt(
+                signature=signature,
+                database_row=row_index,
+                payload=payload,
+                current=current,
+                proposal=None,
+                validation=ValidationResult(False, (safe_error,)),
+                error_message=safe_error,
+            )
+            error_messages.append(safe_error)
             failed += 1
             review_status = "API Failure - Manual Review"
 
@@ -289,6 +309,7 @@ def review_eligible_rows(
         failed=failed,
         auto_accepted=auto_accepted,
         skipped_cached=skipped_cached,
+        error_messages=tuple(dict.fromkeys(error_messages)),
     )
 
 
