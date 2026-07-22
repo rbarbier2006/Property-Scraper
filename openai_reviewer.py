@@ -14,7 +14,16 @@ import os
 import re
 from typing import Any, Literal, Mapping
 
-from openai import OpenAI
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    AuthenticationError,
+    BadRequestError,
+    InternalServerError,
+    OpenAI,
+    PermissionDeniedError,
+    RateLimitError,
+)
 from pydantic import BaseModel, ConfigDict, Field
 
 from address_parser import SUITE_LABELS, is_confident_component_structure
@@ -22,7 +31,8 @@ from address_parser import SUITE_LABELS, is_confident_component_structure
 
 DEFAULT_OPENAI_MODEL = "gpt-5-nano"
 DEFAULT_MAX_REVIEW_ROWS = 25
-DEFAULT_TIMEOUT_SECONDS = 30.0
+DEFAULT_TIMEOUT_SECONDS = 60.0
+DEFAULT_MAX_OUTPUT_TOKENS = 4_096
 
 ALLOWED_REVIEW_FIELDS = (
     "Original PropertyAddress",
@@ -84,6 +94,52 @@ class MissingAPIKeyError(RuntimeError):
 
 class ReviewServiceError(RuntimeError):
     """Safe, user-facing wrapper for provider and structured-output failures."""
+
+
+def _safe_service_error(exc: Exception) -> ReviewServiceError:
+    """Classify provider failures without exposing keys, payloads, or raw responses."""
+
+    if isinstance(exc, AuthenticationError):
+        message = (
+            "OpenAI rejected the API key. Replace OPENAI_API_KEY in Streamlit "
+            "Secrets with an active project API key, save, and reboot the app."
+        )
+    elif isinstance(exc, PermissionDeniedError):
+        message = (
+            "The OpenAI project does not have permission to use the configured model. "
+            "Confirm that this project can access gpt-5-nano."
+        )
+    elif isinstance(exc, RateLimitError):
+        message = (
+            "OpenAI reported a rate or usage-limit error. Check API Billing, Usage, "
+            "and project limits; ChatGPT subscriptions do not include API credits."
+        )
+    elif isinstance(exc, (APITimeoutError, TimeoutError)):
+        message = (
+            "The OpenAI request timed out. The address was not changed; try again "
+            "after reprocessing the file."
+        )
+    elif isinstance(exc, APIConnectionError):
+        message = (
+            "Streamlit could not connect to OpenAI. Check the deployment logs and "
+            "try again after reprocessing the file."
+        )
+    elif isinstance(exc, BadRequestError):
+        message = (
+            "OpenAI rejected the request. Confirm OPENAI_MODEL is gpt-5-nano and "
+            "that GitHub contains the current requirements.txt."
+        )
+    elif isinstance(exc, InternalServerError):
+        message = (
+            "OpenAI returned a temporary server error. The address was not changed; "
+            "try again later after reprocessing the file."
+        )
+    else:
+        message = (
+            "OpenAI did not return a usable structured address proposal. The address "
+            "was not changed."
+        )
+    return ReviewServiceError(message)
 
 
 def _read_source_value(name: str, secrets: Mapping[str, Any] | None) -> Any:
@@ -188,29 +244,47 @@ def review_address_with_openai(
         raise ValueError("Only rows marked Review Needed are eligible for AI review.")
 
     active_client = client or create_openai_client(config)
+    request_options: dict[str, Any] = {
+        "model": config.model or DEFAULT_OPENAI_MODEL,
+        "input": [
+            {"role": "system", "content": _REVIEWER_INSTRUCTIONS},
+            {
+                "role": "user",
+                "content": "Review this single unresolved row:\n"
+                + json.dumps(dict(payload), ensure_ascii=False),
+            },
+        ],
+        "text_format": AddressReviewProposal,
+        "max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS,
+        "store": False,
+    }
+    if str(request_options["model"]).casefold().startswith("gpt-5"):
+        # Address separation is bounded; low effort leaves ample room for the schema.
+        request_options["reasoning"] = {"effort": "low"}
     try:
-        response = active_client.responses.parse(
-            model=config.model or DEFAULT_OPENAI_MODEL,
-            input=[
-                {"role": "system", "content": _REVIEWER_INSTRUCTIONS},
-                {
-                    "role": "user",
-                    "content": "Review this single unresolved row:\n"
-                    + json.dumps(dict(payload), ensure_ascii=False),
-                },
-            ],
-            text_format=AddressReviewProposal,
-            max_output_tokens=500,
-            store=False,
-        )
+        response = active_client.responses.parse(**request_options)
         if response.output_parsed is None:
-            raise ValueError("No structured output was returned.")
+            incomplete_reason = getattr(
+                getattr(response, "incomplete_details", None), "reason", ""
+            )
+            if (
+                getattr(response, "status", "") == "incomplete"
+                and incomplete_reason == "max_output_tokens"
+            ):
+                raise ReviewServiceError(
+                    "The model reached its output limit before returning a structured "
+                    "proposal. The address was not changed."
+                )
+            raise ReviewServiceError(
+                "OpenAI returned no structured address proposal. The address was not "
+                "changed."
+            )
         return AddressReviewProposal.model_validate(response.output_parsed)
-    except MissingAPIKeyError:
+    except (MissingAPIKeyError, ReviewServiceError):
         raise
-    except Exception:
+    except Exception as exc:
         # Never expose provider responses, request contents, or credentials.
-        raise ReviewServiceError("AI review could not be completed for this row.") from None
+        raise _safe_service_error(exc) from None
 
 
 def _tokens(value: str) -> list[str]:
