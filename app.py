@@ -60,6 +60,18 @@ def _show_ai_controls(
         "AI review can consume API credits. For a public deployment, use private "
         "repository/app access or another real access-control layer before enabling it."
     )
+    st.caption(f"Configured AI model: {config.model}")
+    with st.expander("How AI review works", expanded=False):
+        st.markdown(
+            "1. Python processes the file first. Only rows still marked **Review Needed** "
+            "are eligible.\n\n"
+            "2. Click the red AI review button to request a proposal for those rows.\n\n"
+            "3. A successful proposal appears in the **Proposed AI** columns below. "
+            "Python rejects any information that was not already in PropertyAddress.\n\n"
+            "4. Unless automatic acceptance is enabled, check **Accept Suggestion** and "
+            "then click **Apply Review Decisions and Manual Edits**.\n\n"
+            "The AI never searches for or guesses missing ZIP codes, cities, or suites."
+        )
     if not config.api_key:
         st.warning(
             "OPENAI_API_KEY is not configured. AI review is disabled, but manual review "
@@ -129,6 +141,13 @@ def _show_ai_controls(
             st.warning(
                 f"AI review could not complete for {run.failed} row(s). Python results "
                 "were preserved and those rows remain available for manual review."
+            )
+            for message in run.error_messages:
+                st.error(message)
+            st.caption(
+                "After correcting the configuration or account issue, process the file "
+                "again before retrying. Failed attempts are cached for this session to "
+                "prevent accidental duplicate charges."
             )
     except MissingAPIKeyError as exc:
         st.warning(str(exc))
