@@ -185,7 +185,9 @@ def _apply_components(
 ) -> None:
     for column in ("Address", "Suite", "City", "Zip Code"):
         result.database.at[row_index, column] = str(components[column]).strip()
-    result.database.at[row_index, "Parse Status"] = "Parsed"
+    result.database.at[row_index, "Parse Status"] = (
+        "AI Parsed" if method == "OpenAI" else "Parsed"
+    )
     _set_review_method(result, row_index, method)
 
 
