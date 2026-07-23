@@ -209,7 +209,9 @@ def refresh_processing_result(result: ProcessingResult) -> None:
     result.review_needed = result.database.loc[
         result.database["Parse Status"].eq("Review Needed")
     ].copy()
-    parsed_count = int(result.database["Parse Status"].eq("Parsed").sum())
+    parsed_count = int(
+        result.database["Parse Status"].isin(["Parsed", "AI Parsed"]).sum()
+    )
     unresolved_count = int(result.database["Parse Status"].eq("Review Needed").sum())
     result.summary["addresses_parsed"] = parsed_count
     result.summary["addresses_review_needed"] = unresolved_count
@@ -222,9 +224,7 @@ def refresh_processing_result(result: ProcessingResult) -> None:
         result.summary["manual_corrections_accepted"] = 0
         return
 
-    ai_reviewed = log["AI Decision"].astype(str).str.strip().ne("") | log[
-        "Validation Result"
-    ].astype(str).eq("API review failed")
+    ai_reviewed = log["Review Method"].eq("OpenAI")
     accepted = log["Correction Accepted"].map(
         lambda value: value is True or str(value).strip().casefold() == "true"
     )
