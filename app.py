@@ -51,6 +51,16 @@ def _clear_file_session_state() -> None:
         st.session_state.pop(key, None)
 
 
+def _select_all_valid_suggestions(editor_frame):
+    """Return editor defaults with only Python-validated AI proposals selected."""
+
+    selected = editor_frame.copy()
+    valid_suggestions = selected["Suggestion Valid"].fillna(False)
+    selected.loc[valid_suggestions, "Accept Suggestion"] = True
+    selected.loc[valid_suggestions, "Reject Suggestion"] = False
+    return selected
+
+
 def _show_ai_controls(
     result: ProcessingResult,
     config,
@@ -173,6 +183,31 @@ def _show_manual_review(result: ProcessingResult, mode: str, model: str) -> None
     )
     cache = st.session_state.setdefault("ai_review_cache", {})
     editor_frame = build_review_editor(result, cache, model)
+    select_all_valid = False
+    bulk_selection_key = (
+        f"select_all_valid_{st.session_state.get('source_hash', '')}_"
+        f"{len(cache)}_{len(result.review_needed)}"
+    )
+    if mode == AI_MODE:
+        has_valid_suggestions = bool(editor_frame["Suggestion Valid"].fillna(False).any())
+        select_all_valid = st.checkbox(
+            "Select all valid AI suggestions",
+            value=False,
+            disabled=not has_valid_suggestions,
+            help=(
+                "Checks Accept Suggestion for every proposal that passed Python "
+                "validation. You can deselect individual rows in the table before "
+                "applying the decisions."
+            ),
+            key=bulk_selection_key,
+        )
+        if not has_valid_suggestions:
+            st.caption(
+                "No AI suggestions currently pass Python validation, so there is "
+                "nothing safe to select in bulk."
+            )
+    if select_all_valid:
+        editor_frame = _select_all_valid_suggestions(editor_frame)
     noneditable = [
         "Database Row",
         "Review Signature",
@@ -209,7 +244,8 @@ def _show_manual_review(result: ProcessingResult, mode: str, model: str) -> None
         },
         key=(
             f"review_editor_{st.session_state.get('source_hash', '')}_"
-            f"{len(cache)}_{len(result.review_needed)}_{mode}"
+            f"{len(cache)}_{len(result.review_needed)}_{mode}_"
+            f"bulk_{int(select_all_valid)}"
         ),
     )
     if st.button("Apply Review Decisions and Manual Edits"):
